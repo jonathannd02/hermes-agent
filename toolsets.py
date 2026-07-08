@@ -64,6 +64,10 @@ _HERMES_CORE_TOOLS = [
     # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
+    # Oracle persona retrieval + citation validation (fork feature)
+    "oracle_persona_sync", "oracle_persona_search", "oracle_persona_get_source", "oracle_citation_validate",
+    # Cross-platform messaging (fork feature — gated on gateway running via check_fn)
+    "send_message",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -196,6 +200,14 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
+
+    "oracle": {
+        "description": "Oracle persona retrieval with Qdrant hybrid search and strict citation validation",
+        "tools": ["oracle_persona_sync", "oracle_persona_search", "oracle_persona_get_source", "oracle_citation_validate"],
+        "includes": []
+    },
+
+
     
 
     "file": {
