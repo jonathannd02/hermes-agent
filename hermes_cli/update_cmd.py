@@ -8276,6 +8276,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print(f"  {origin_url}")
         print()
 
+        # Fork custom-branch flow: rebase the feature branch onto
+        # upstream/main (in a temp worktree) and push it to origin, then let
+        # the vanilla flow below deploy origin/<branch> — its diverged-history
+        # path (`reset --hard origin/<branch>`) plus all post-update steps.
+        # See hermes_cli/fork_update.py.
+        if not use_zip_update:
+            from hermes_cli.fork_update import maybe_rebase_fork_branch
+
+            fork_branch = maybe_rebase_fork_branch(
+                git_cmd, _m().PROJECT_ROOT, args
+            )
+            if fork_branch:
+                args.branch = fork_branch
+
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
         try:
