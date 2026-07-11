@@ -64,8 +64,10 @@ _HERMES_CORE_TOOLS = [
     # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
-    # Oracle persona retrieval + citation validation (fork feature)
-    "oracle_persona_sync", "oracle_persona_search", "oracle_persona_get_source", "oracle_citation_validate",
+    # NOTE: Oracle persona counsel lives in the user plugin `oracle`
+    # (~/.hermes/plugins/oracle) per the 2026-07-10 audit — it registers
+    # oracle_consult/oracle_council/oracle_status/oracle_get_source itself,
+    # and the registry synthesizes its `oracle` toolset; no static entry.
     # Cross-platform messaging (fork feature — gated on gateway running via check_fn)
     "send_message",
     # Clarifying questions
@@ -200,14 +202,6 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
-
-    "oracle": {
-        "description": "Oracle persona retrieval with Qdrant hybrid search and strict citation validation",
-        "tools": ["oracle_persona_sync", "oracle_persona_search", "oracle_persona_get_source", "oracle_citation_validate"],
-        "includes": []
-    },
-
-
     
 
     "file": {
