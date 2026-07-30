@@ -47,6 +47,10 @@ Extract results::
 On failure (either capability)::
 
     {"success": False, "error": str}
+
+Providers may add a ``diagnostics`` mapping to either envelope. The search
+dispatcher preserves it and, when explicitly configured, records bounded
+fallback attempts under ``diagnostics.fallback``.
 """
 
 from __future__ import annotations

@@ -734,6 +734,189 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     assert resolved["requested_provider"] == "custom"
 
 
+def test_bare_custom_without_named_entry_still_falls_through(monkeypatch):
+    """No literal providers.custom entry → bare custom keeps the legacy
+    model.base_url trust-path behavior, unchanged by the fix."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "http://127.0.0.1:8082/v1",
+            "default": "my-local-model",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {"providers": {"some-other-proxy": {"api": "https://x.example/v1"}}},
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://127.0.0.1:8082/v1"
+
+
+def _subscription_proxy_config():
+    return {
+        "providers": {
+            "cursor": {
+                "name": "Cursor Subscription",
+                "api": "http://127.0.0.1:8787/v1",
+                "api_key": "crsr-key",
+                "default_model": "grok-4.5-fast",
+                "models": ["grok-4.5-fast", "composer-2.5"],
+            }
+        }
+    }
+
+
+def test_bare_custom_heals_to_the_entry_serving_the_model(monkeypatch):
+    """A bare ``custom`` override that arrives with no base_url must route to
+    the entry that serves the model, not to the OpenRouter default.
+
+    Desktop ``session.create`` ships the composer's provider verbatim and
+    sub-agents inherit the parent's resolved billing class, so bare "custom"
+    reaches resolution unhealed. With an OPENROUTER_API_KEY in the env the old
+    fall-through sent the turn to OpenRouter and surfaced its 401 as if the
+    local endpoint were broken.
+    """
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex", "default": "gpt-5.6-luna"})
+    monkeypatch.setattr(rp, "load_config", _subscription_proxy_config)
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("bare custom must heal to the model's entry, not fall through")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom", target_model="grok-4.5-fast")
+
+    assert resolved["base_url"] == "http://127.0.0.1:8787/v1"
+    assert resolved["api_key"] == "crsr-key"
+    assert resolved["requested_provider"] == "custom:cursor"
+    assert resolved["source"] == "custom_provider:Cursor Subscription"
+
+
+def test_bare_custom_healing_keeps_an_explicit_base_url(monkeypatch):
+    """An ad-hoc endpoint passed alongside bare custom still wins — healing is
+    only for overrides that lost their base_url."""
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex", "default": "gpt-5.6-luna"})
+    monkeypatch.setattr(rp, "load_config", _subscription_proxy_config)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom",
+        target_model="grok-4.5-fast",
+        explicit_base_url="http://127.0.0.1:9999/v1",
+    )
+
+    assert resolved["base_url"] == "http://127.0.0.1:9999/v1"
+
+
+def test_bare_custom_with_unserved_model_still_falls_through(monkeypatch):
+    """A model no configured entry serves keeps the legacy fall-through."""
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openrouter", "default": "gpt-5.6-luna"})
+    monkeypatch.setattr(rp, "load_config", _subscription_proxy_config)
+
+    resolved = rp.resolve_runtime_provider(requested="custom", target_model="gpt-5.6-luna")
+
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+
+
+def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch):
+    """After v11→v12 migration deletes custom_providers, resolution should
+    still find entries in the providers dict via get_compatible_custom_providers."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "openai-direct-primary": {
+                    "api": "https://api.openai.com/v1",
+                    "api_key": "dir-key",
+                    "default_model": "gpt-5-mini",
+                    "name": "OpenAI Direct (Primary)",
+                    "transport": "codex_responses",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openai-direct-primary")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "dir-key"
+    assert resolved["requested_provider"] == "openai-direct-primary"
+    assert resolved["source"] == "custom_provider:OpenAI Direct (Primary)"
+    assert resolved["model"] == "gpt-5-mini"
+
+
+def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
+    """providers dict entries with key_env should resolve API key from env var."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MYCORP_API_KEY", "env-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "default_model": "acme-large",
+                    "key_env": "MYCORP_API_KEY",
+                    "name": "MyCorp Proxy",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+    assert resolved["api_key"] == "env-secret"
+    assert resolved["requested_provider"] == "mycorp-proxy"
+    assert resolved["source"] == "custom_provider:MyCorp Proxy"
+    assert resolved["model"] == "acme-large"
 
 
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):

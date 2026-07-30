@@ -109,6 +109,82 @@ class TestSearXNGSearchProviderSearch:
 
         assert calls[0] == "http://localhost:8080/search", f"Got: {calls[0]}"
 
+    def test_empty_results_with_unresponsive_engine_are_failure(self, monkeypatch):
+        """HTTP 200 plus an upstream failure must not look like success."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(
+            {
+                "results": [],
+                "number_of_results": 0,
+                "unresponsive_engines": [["bing", "CAPTCHA"]],
+            }
+        )
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "no results" in result["error"].lower()
+        assert "bing" in result["error"]
+        assert result["diagnostics"]["unresponsive_engines"] == [["bing", "CAPTCHA"]]
+
+    def test_empty_results_without_engine_failure_remain_valid(self, monkeypatch):
+        """A genuine zero-hit query is distinct from an upstream outage."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(
+            {"results": [], "number_of_results": 0, "unresponsive_engines": []}
+        )
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result == {"success": True, "data": {"web": []}}
+
+    @pytest.mark.parametrize(
+        "payload",
+        [{}, {"results": None}, {"results": {}}, {"results": ""}, {"results": 0}],
+    )
+    def test_malformed_results_field_is_failure(self, monkeypatch, payload):
+        """Malformed upstream payloads must not become empty successes."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(payload)
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is False
+        assert "results" in result["error"]
+
+    def test_partial_engine_failure_preserves_results_and_diagnostics(self, monkeypatch):
+        """Usable results remain successful while degraded engines are visible."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response(
+            {
+                "results": [
+                    {
+                        "title": "Result",
+                        "url": "https://example.com/result",
+                        "content": "content",
+                    }
+                ],
+                "number_of_results": 1,
+                "unresponsive_engines": [["github", "access denied"]],
+            }
+        )
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["url"] == "https://example.com/result"
+        assert result["diagnostics"]["unresponsive_engines"] == [
+            ["github", "access denied"]
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available recognizes "searxng"
@@ -121,10 +197,22 @@ class TestIsBackendAvailable:
         from tools.web_tools import _is_backend_available
         assert _is_backend_available("searxng") is True
 
-
     def test_unknown_backend_still_false(self):
         from tools.web_tools import _is_backend_available
         assert _is_backend_available("unknownbackend") is False
+
+
+class TestCapabilityBackendSelection:
+    def test_explicit_unavailable_search_backend_is_not_replaced(self, monkeypatch):
+        """Explicit backend selection must not silently fall through to DDGS."""
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        from tools.web_tools import _get_search_backend
+
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value={"search_backend": "searxng", "backend": "ddgs"},
+        ):
+            assert _get_search_backend() == "searxng"
 
 
 # ---------------------------------------------------------------------------

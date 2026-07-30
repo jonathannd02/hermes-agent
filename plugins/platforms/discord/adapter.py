@@ -3484,7 +3484,20 @@ class DiscordAdapter(BasePlatformAdapter):
             nonconversational = _metadata_marks_nonconversational(metadata)
             final_delivery = bool(metadata and metadata.get("notify"))
 
-            if thread_id:
+            # ``dm:<user_id>`` is an explicit recipient target. Resolve it
+            # through Discord's DM API instead of treating the user snowflake
+            # (or a stale cached channel) as a public channel ID.
+            if str(chat_id).lower().startswith("dm:"):
+                dm_user_id = str(chat_id)[3:].strip()
+                if not dm_user_id.isdigit():
+                    return SendResult(success=False, error=f"Invalid Discord DM user ID: {dm_user_id}")
+                user = self._client.get_user(int(dm_user_id))
+                if user is None:
+                    user = await self._client.fetch_user(int(dm_user_id))
+                channel = getattr(user, "dm_channel", None)
+                if channel is None:
+                    channel = await user.create_dm()
+            elif thread_id:
                 # Fetch the thread directly — threads are addressed by their own ID.
                 channel = self._client.get_channel(int(thread_id))
                 if not channel:
@@ -10064,6 +10077,41 @@ async def _standalone_send(
         last_data = None
         warnings = []
 
+        # Explicit DM targets resolve a user ID to a real Discord DM channel
+        # before any message endpoint is selected. This is deliberately not
+        # inferred from a numeric ID: Discord channel and user snowflakes share
+        # the same shape, and stale channel-directory entries can otherwise
+        # route a requested DM into the wrong place.
+        dm_user_id = None
+        if str(chat_id).lower().startswith("dm:"):
+            dm_user_id = str(chat_id)[3:].strip()
+            if not dm_user_id.isdigit():
+                return {"error": f"Invalid Discord DM user ID: {dm_user_id}"}
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20), **_sess_kw) as dm_session:
+                    async with dm_session.post(
+                        "https://discord.com/api/v10/users/@me/channels",
+                        headers=json_headers,
+                        json={"recipient_id": dm_user_id},
+                        **_req_kw,
+                    ) as dm_resp:
+                        if dm_resp.status not in {200, 201}:
+                            body = await _standalone_read_text_limited(
+                                dm_resp,
+                                _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+                            )
+                            return {"error": f"Discord DM creation error ({dm_resp.status}): {body}"}
+                        dm_data = await _standalone_read_json_limited(
+                            dm_resp,
+                            _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
+                        )
+                resolved_dm_channel_id = str(dm_data.get("id") or "").strip()
+                if not resolved_dm_channel_id:
+                    return {"error": "Discord DM creation returned no channel ID"}
+                chat_id = resolved_dm_channel_id
+            except Exception as e:
+                return {"error": _standalone_sanitize_error(f"Discord DM creation failed: {e}")}
+
         # Thread endpoint: Discord threads are channels; send directly to the thread ID.
         if thread_id:
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
@@ -10271,6 +10319,9 @@ async def _standalone_send(
             return {"error": error}
 
         result = {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": last_data.get("id")}
+        if dm_user_id:
+            result["delivery_type"] = "dm"
+            result["recipient_id"] = dm_user_id
         if warnings:
             result["warnings"] = warnings
         return result

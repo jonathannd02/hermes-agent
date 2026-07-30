@@ -410,7 +410,10 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    // Keep the variant tag (`Latest`/`Preview`/…) — the name
+                    // alone collapses distinct ids such as `composer-latest`
+                    // and `composer` into the same visible row label.
+                    const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Effective settings for this row: the live choice when it's
@@ -459,6 +462,7 @@ export function ModelCatalogMenu({
                         >
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches query={search} text={name} />
+                            {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
                           {isCurrent ? (

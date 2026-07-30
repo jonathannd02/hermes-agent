@@ -73,6 +73,17 @@ function renderMenu() {
 // the kanban board would end up disagreeing about what "my models" means —
 // which is exactly the drift extracting this component was meant to prevent.
 describe('the catalog owns model curation', () => {
+  it('keeps model variant tags visible after display-name cleanup', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['composer-latest', 'composer-2'], name: 'Cursor', slug: 'cursor' }]
+    })
+
+    renderMenu()
+
+    const tag = await screen.findByText('Latest')
+    expect(tag.parentElement?.textContent).toContain('Composer Latest')
+  })
+
   it('honours the stored Edit Models shortlist', async () => {
     setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
 

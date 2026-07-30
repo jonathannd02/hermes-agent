@@ -116,10 +116,12 @@ class TestDefaultConfig:
         assert "backend" in web
         assert "search_backend" in web
         assert "extract_backend" in web
+        assert "search_fallbacks" in web
         # All empty string by default (no override)
         assert web["backend"] == ""
         assert web["search_backend"] == ""
         assert web["extract_backend"] == ""
+        assert web["search_fallbacks"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +156,126 @@ class TestWebSearchUsesSearchBackend:
 
         assert len(called_with) > 0
         assert called_with[0][0] == "search"
+
+
+class TestWebSearchFallbacks:
+    """Configured search failover is bounded and never retries valid zero-hits."""
+
+    class _StubProvider:
+        def __init__(self, name: str, response: Any):
+            self.name = name
+            self.response = response
+            self.calls = 0
+
+        def supports_search(self) -> bool:
+            return True
+
+        def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+            self.calls += 1
+            if isinstance(self.response, BaseException):
+                raise self.response
+            return self.response
+
+    def _patch_dispatch(self, monkeypatch, providers, *, fallbacks):
+        from tools import web_tools
+        from agent import web_search_registry
+
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_get_search_backend", lambda: "searxng")
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {"search_fallbacks": fallbacks},
+        )
+        monkeypatch.setattr(
+            web_search_registry,
+            "get_provider",
+            lambda name: providers.get(name),
+        )
+        monkeypatch.setattr(web_tools._debug, "log_call", lambda *args, **kwargs: None)
+        monkeypatch.setattr(web_tools._debug, "save", lambda *args, **kwargs: None)
+
+    def test_failed_primary_uses_configured_fallback(self, monkeypatch):
+        from tools import web_tools
+
+        primary = self._StubProvider(
+            "searxng",
+            {
+                "success": False,
+                "error": "upstream unavailable",
+                "diagnostics": {"unresponsive_engines": [["bing", "CAPTCHA"]]},
+            },
+        )
+        fallback = self._StubProvider(
+            "ddgs",
+            {
+                "success": True,
+                "data": {"web": [{"title": "fallback", "url": "https://example.com"}]},
+            },
+        )
+        self._patch_dispatch(
+            monkeypatch,
+            {"searxng": primary, "ddgs": fallback},
+            fallbacks=["ddgs"],
+        )
+
+        result = json.loads(web_tools.web_search_tool("query", limit=3))
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "fallback"
+        assert primary.calls == 1
+        assert fallback.calls == 1
+        assert result["diagnostics"]["fallback"]["attempted"] == ["searxng", "ddgs"]
+        assert result["diagnostics"]["fallback"]["failures"][0]["provider"] == "searxng"
+        assert result["diagnostics"]["fallback"]["failures"][0]["diagnostics"] == {
+            "unresponsive_engines": [["bing", "CAPTCHA"]]
+        }
+
+    def test_valid_empty_results_do_not_trigger_fallback(self, monkeypatch):
+        from tools import web_tools
+
+        primary = self._StubProvider(
+            "searxng",
+            {
+                "success": True,
+                "data": {"web": []},
+            },
+        )
+        fallback = self._StubProvider(
+            "ddgs", {"success": True, "data": {"web": [{"title": "must not run"}]}}
+        )
+        self._patch_dispatch(
+            monkeypatch,
+            {"searxng": primary, "ddgs": fallback},
+            fallbacks=["ddgs"],
+        )
+
+        result = json.loads(web_tools.web_search_tool("no-hit", limit=3))
+
+        assert result == {"success": True, "data": {"web": []}}
+        assert primary.calls == 1
+        assert fallback.calls == 0
+
+    def test_without_fallback_config_failure_is_not_retried(self, monkeypatch):
+        from tools import web_tools
+
+        primary = self._StubProvider(
+            "searxng", {"success": False, "error": "upstream unavailable"}
+        )
+        fallback = self._StubProvider(
+            "ddgs", {"success": True, "data": {"web": [{"title": "must not run"}]}}
+        )
+        self._patch_dispatch(
+            monkeypatch,
+            {"searxng": primary, "ddgs": fallback},
+            fallbacks=[],
+        )
+
+        result = json.loads(web_tools.web_search_tool("query", limit=3))
+
+        assert result == {"success": False, "error": "upstream unavailable"}
+        assert primary.calls == 1
+        assert fallback.calls == 0
 
 
 class TestUnconfiguredErrorEnvelopeParity:

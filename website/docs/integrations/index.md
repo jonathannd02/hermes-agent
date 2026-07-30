@@ -43,9 +43,15 @@ Quick setup example:
 ```yaml
 web:
   backend: firecrawl    # firecrawl | searxng | brave-free | ddgs | keenable | exa | parallel | xai
+  # Optional, ordered search-only failover. Empty by default.
+  # Fallback runs only after success: false, never for a valid zero-hit query.
+  search_fallbacks: [ddgs]
 ```
 
-If `web.backend` is not set, the backend is auto-detected from whichever API key is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`.
+`web.search_fallbacks` is opt-in and bounded to the first three providers. It
+does not silently replace an explicitly selected primary backend. If
+`web.backend` is not set, the backend is auto-detected from whichever API key
+is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`.
 
 ## Browser Automation
 

@@ -109,7 +109,62 @@ class SearXNGWebSearchProvider(WebSearchProvider):
                 "error": "Could not parse SearXNG response as JSON",
             }
 
-        raw_results = data.get("results", [])
+        if not isinstance(data, dict):
+            logger.warning("SearXNG returned a non-object JSON response")
+            return {
+                "success": False,
+                "error": "SearXNG returned an invalid JSON response",
+            }
+
+        if "results" not in data or data["results"] is None:
+            logger.warning("SearXNG response is missing its results field")
+            return {
+                "success": False,
+                "error": "SearXNG response is missing a results list",
+            }
+
+        raw_results = data["results"]
+        if not isinstance(raw_results, list):
+            logger.warning("SearXNG returned a non-list results field")
+            return {
+                "success": False,
+                "error": "SearXNG returned an invalid results field",
+            }
+
+        unresponsive_engines = data.get("unresponsive_engines") or []
+        if not isinstance(unresponsive_engines, list):
+            unresponsive_engines = [unresponsive_engines]
+
+        diagnostics = {
+            "number_of_results": data.get("number_of_results"),
+            "unresponsive_engines": unresponsive_engines,
+        }
+
+        # SearXNG deliberately returns HTTP 200 when one or more upstream
+        # engines fail. Do not let an empty aggregate look like a successful
+        # search in that case: the caller otherwise has no way to distinguish
+        # "no match" from "the configured engine pool is broken".
+        if not raw_results and unresponsive_engines:
+            failures = []
+            for entry in unresponsive_engines:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    failures.append(f"{entry[0]} ({entry[1]})")
+                else:
+                    failures.append(str(entry))
+            failure_text = ", ".join(failures)
+            logger.warning(
+                "SearXNG returned no results; unresponsive engines: %s",
+                failure_text,
+            )
+            return {
+                "success": False,
+                "error": (
+                    "SearXNG returned no results because upstream engine(s) "
+                    f"are unavailable: {failure_text}. "
+                    "Check the SearXNG engine configuration or retry."
+                ),
+                "diagnostics": diagnostics,
+            }
 
         # SearXNG may return a score field; sort descending and cap to limit.
         sorted_results = sorted(
@@ -136,7 +191,16 @@ class SearXNGWebSearchProvider(WebSearchProvider):
             limit,
         )
 
-        return {"success": True, "data": {"web": web_results}}
+        response: Dict[str, Any] = {
+            "success": True,
+            "data": {"web": web_results},
+        }
+        # Preserve partial-engine diagnostics without turning a usable result
+        # set into a failure. This is useful when an instance still returns
+        # results but has a degraded upstream pool.
+        if unresponsive_engines:
+            response["diagnostics"] = diagnostics
+        return response
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {

@@ -131,3 +131,31 @@ def test_no_caption_non_forum_keeps_separate_text():
         assert calls[1][0].endswith("/messages")
     finally:
         os.unlink(img)
+
+
+def test_explicit_dm_resolves_user_before_sending():
+    """An explicit Discord DM target must create/resolve a DM channel first."""
+    _remember_channel_is_forum("dm-channel-123", False)
+    session_ctx, calls = _session_with(
+        [
+            _resp(200, {"id": "dm-channel-123"}),
+            _resp(200, {"id": "message-123"}),
+        ]
+    )
+
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(
+                _pconfig(),
+                "dm:167334162317967360",
+                "hello privately",
+            )
+        )
+
+    assert res["success"] is True
+    assert res["delivery_type"] == "dm"
+    assert res["recipient_id"] == "167334162317967360"
+    assert calls[0][0].endswith("/users/@me/channels")
+    assert calls[0][1] == {"recipient_id": "167334162317967360"}
+    assert calls[1][0].endswith("/channels/dm-channel-123/messages")
+    assert calls[1][1] == {"content": "hello privately"}

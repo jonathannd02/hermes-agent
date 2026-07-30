@@ -312,7 +312,17 @@ def test_photon_e164_target_is_explicit() -> None:
 
 
 def test_e164_target_still_requires_phone_platform() -> None:
-    assert _parse_target_ref("matrix", "+15551234567")[2] is False
+    assert _parse_target_ref("matrix", "+155****4567")[2] is False
+
+
+def test_discord_dm_user_target_is_explicit() -> None:
+    chat_id, thread_id, is_explicit = _parse_target_ref(
+        "discord", "dm:167334162317967360"
+    )
+
+    assert chat_id == "dm:167334162317967360"
+    assert thread_id is None
+    assert is_explicit is True
 
 
 def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:

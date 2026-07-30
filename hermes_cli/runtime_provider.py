@@ -2007,6 +2007,35 @@ def resolve_runtime_provider(
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
+    # Last-line recovery for a bare ``custom`` provider that reached resolution
+    # without a base_url. Bare "custom" is the resolved billing class, not a
+    # routable identity: without this it falls through to the OpenRouter
+    # default URL, where an OPENROUTER_API_KEY in the environment turns a
+    # routing bug into a confusing upstream 401 instead of a local failure.
+    # The persistence/restore paths each heal it (canonical_custom_identity),
+    # but fresh overrides that arrive over the wire — desktop session.create
+    # ships the composer's provider verbatim, sub-agents inherit the parent's
+    # resolved class — bypass all of them, so heal here too. Only the
+    # model-based reverse lookup is used: it names the one entry that actually
+    # serves this model, so it can't hijack an ad-hoc endpoint the way the
+    # config-provider fallback could.
+    if requested_provider == "custom" and not explicit_base_url and target_model:
+        healed = find_custom_provider_identity_by_model(target_model)
+        if healed:
+            healed_runtime = _resolve_named_custom_runtime(
+                requested_provider=healed,
+                explicit_api_key=explicit_api_key,
+                explicit_base_url=None,
+            )
+            if healed_runtime:
+                logger.debug(
+                    "bare custom provider healed to %s via model %s",
+                    healed,
+                    target_model,
+                )
+                healed_runtime["requested_provider"] = healed
+                return healed_runtime
+
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url
     # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
     # route through the OpenAI-compatible resolver instead of letting

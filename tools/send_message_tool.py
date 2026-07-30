@@ -36,6 +36,7 @@ _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Z
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
+_DISCORD_DM_TARGET_RE = re.compile(r"^\s*dm:(\d+)\s*$", re.IGNORECASE)
 # Platforms that address recipients by phone number and accept E.164 format
 # (with a leading '+'). Without this, "+15551234567" fails the isdigit() check
 # below and falls through to channel-name resolution, which has no way to
@@ -231,7 +232,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. For an explicit Discord DM use 'discord:dm:<user_id>'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:dm:167334162317967360', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -554,6 +555,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             return match.group(1), match.group(2), True
     if platform_name == "discord":
+        match = _DISCORD_DM_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return f"dm:{match.group(1)}", None, True
         match = _NUMERIC_TOPIC_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
