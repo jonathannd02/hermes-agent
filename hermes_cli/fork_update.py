@@ -14,11 +14,11 @@ branch (e.g. ``custom-main``).  ``hermes update`` calls
    dependency sync, web UI build, skills sync, config migration, gateway
    restarts.
 
-Everything here is deterministic git.  When a rebase conflict happens (the
-feature stack is deliberately tiny, so this should be rare), the rebase is
-aborted, the live checkout is left untouched, and the exact manual commands
-are printed.  ``rerere`` is enabled so a conflict resolved once is replayed
-automatically on later updates.
+Everything here is deterministic git.  ``rerere`` is enabled so a conflict
+resolved once is replayed automatically on later updates; Git stages that
+known resolution but still pauses the rebase, so this helper continues those
+fully-resolved stops.  A genuinely unresolved conflict aborts the rebase,
+leaves the live checkout untouched, and prints the exact manual commands.
 """
 
 from __future__ import annotations
@@ -64,6 +64,52 @@ def _ensure_rerere(git_cmd, repo_root) -> None:
     """Enable rerere so a once-resolved conflict replays on later rebases."""
     _run(git_cmd, repo_root, "config", "rerere.enabled", "true")
     _run(git_cmd, repo_root, "config", "rerere.autoUpdate", "true")
+
+
+def _unmerged_paths(git_cmd, worktree) -> list[str]:
+    return _run(
+        git_cmd, worktree, "diff", "--name-only", "--diff-filter=U"
+    ).stdout.strip().splitlines()
+
+
+def _rebase_in_progress(git_cmd, worktree) -> bool:
+    return _run(git_cmd, worktree, "rebase", "--show-current-patch").returncode == 0
+
+
+def _finish_rerere_resolved_rebase(git_cmd, worktree, rebase):
+    """Continue rebase stops whose conflicts rerere already staged.
+
+    ``git rebase`` still exits nonzero after rerere with ``autoUpdate`` has
+    resolved and staged every path.  Continue only when a rebase is actually
+    in progress and no unmerged paths remain.  Each failed continuation must
+    advance HEAD; otherwise stop so hook/editor/other failures cannot loop.
+    """
+    replayed = 0
+    conflicted = _unmerged_paths(git_cmd, worktree)
+
+    while rebase.returncode != 0 and not conflicted and _rebase_in_progress(
+        git_cmd, worktree
+    ):
+        head_before = _rev(git_cmd, worktree, "HEAD")
+        rebase = _run(
+            git_cmd,
+            worktree,
+            "-c",
+            "core.editor=true",
+            "rebase",
+            "--continue",
+        )
+        replayed += 1
+        conflicted = _unmerged_paths(git_cmd, worktree)
+
+        if (
+            rebase.returncode != 0
+            and not conflicted
+            and _rev(git_cmd, worktree, "HEAD") == head_before
+        ):
+            break
+
+    return rebase, conflicted, replayed
 
 
 def upstream_news_count(git_cmd, repo_root) -> int:
@@ -120,10 +166,13 @@ def maybe_rebase_fork_branch(git_cmd, repo_root, args) -> str | None:
 
     try:
         rebase = _run(git_cmd, worktree, "rebase", UPSTREAM_REF)
+        rebase, conflicted, replayed = _finish_rerere_resolved_rebase(
+            git_cmd, worktree, rebase
+        )
+        if replayed:
+            suffix = "" if replayed == 1 else "s"
+            print(f"  ✓ Reused {replayed} recorded conflict resolution{suffix}")
         if rebase.returncode != 0:
-            conflicted = _run(
-                git_cmd, worktree, "diff", "--name-only", "--diff-filter=U"
-            ).stdout.strip().splitlines()
             _run(git_cmd, worktree, "rebase", "--abort")
             print("✗ Rebase onto upstream/main hit conflicts — nothing was changed.")
             if conflicted:
