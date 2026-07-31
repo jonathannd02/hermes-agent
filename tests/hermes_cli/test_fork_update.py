@@ -38,6 +38,7 @@ def _git_side_effect(
     push_stderr="",
     upstream_remote_ok=True,
     fetch_rc=0,
+    rerere_resolved=False,
 ):
     """Simulate the git command sequences used by fork_update.
 
@@ -93,6 +94,12 @@ def _git_side_effect(
             return _cp(cmd, worktree_add_rc, stderr="fatal: worktree add failed\n")
 
         if args[:2] == ["rebase", "--abort"]:
+            return _cp(cmd, 0)
+
+        if args[:2] == ["rebase", "--show-current-patch"]:
+            return _cp(cmd, 0 if rerere_resolved else 1)
+
+        if args[-2:] == ["rebase", "--continue"]:
             return _cp(cmd, 0)
 
         if args[:1] == ["rebase"]:
@@ -332,6 +339,27 @@ class TestMaybeRebaseForkBranchPaths:
         ]
         assert not _matching(run, "push"), "a conflicted rebase must not reach origin"
         assert _matching(run, "worktree", "remove")
+
+    def test_rerere_resolved_stop_continues_and_pushes(self, tmp_path, capsys):
+        args = SimpleNamespace(branch=None)
+        with patch.object(
+            fu,
+            "_run",
+            side_effect=_git_side_effect(
+                news=2,
+                rebase_rc=1,
+                rerere_resolved=True,
+            ),
+        ) as run:
+            assert fu.maybe_rebase_fork_branch(["git"], tmp_path, args) == "custom-main"
+
+        worktree = _rebase_worktree(tmp_path)
+        assert _matching(run, "-c", "core.editor=true", "rebase", "--continue") == [
+            (worktree, ("-c", "core.editor=true", "rebase", "--continue"))
+        ]
+        assert not _matching(run, "rebase", "--abort")
+        assert _matching(run, "push"), "a rerere-resolved rebase must reach origin"
+        assert "Reused 1 recorded conflict resolution" in capsys.readouterr().out
 
     def test_push_failure_exits(self, tmp_path, capsys):
         args = SimpleNamespace(branch=None)
