@@ -185,7 +185,14 @@ class TestWebSearchFallbacks:
         monkeypatch.setattr(
             web_tools,
             "_load_web_config",
-            lambda: {"search_fallbacks": fallbacks},
+            # These tests isolate the explicitly configured fallback chain.
+            # Upstream's independent one-shot keyless rescue is covered in
+            # test_web_keyless_rescue.py and must not turn failures into
+            # network-backed successes here.
+            lambda: {
+                "search_fallbacks": fallbacks,
+                "keyless_rescue": False,
+            },
         )
         monkeypatch.setattr(
             web_search_registry,
@@ -650,4 +657,3 @@ class TestDisabledPluginDiagnostic:
             assert "No web search provider configured" not in err
         finally:
             restore()
-
