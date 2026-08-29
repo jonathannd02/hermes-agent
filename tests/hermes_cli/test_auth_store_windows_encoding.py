@@ -159,30 +159,6 @@ class TestExplicitEncodingPassed:
         assert "encoding" in kwargs, "read_text() must pass an explicit encoding"
         assert "utf-8" in str(kwargs["encoding"]).lower()
 
-    def test_codex_store_reader_passes_utf8_encoding(self, tmp_path, monkeypatch):
-        """The ~/.codex/auth.json reader must pass an explicit UTF-8 encoding."""
-        codex_home = tmp_path / "codex"
-        codex_home.mkdir()
-        (codex_home / "auth.json").write_text(
-            json.dumps({"tokens": {"access_token": "a", "refresh_token": "r"}}),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("CODEX_HOME", str(codex_home))
-        # Bypass the JWT-expiry check so a fake token doesn't short-circuit.
-        monkeypatch.setattr(auth, "_codex_access_token_is_expiring", lambda *a, **k: False)
-
-        with mock.patch.object(Path, "read_text", wraps=Path.read_text) as spy:
-            auth._import_codex_cli_tokens()
-
-        # _import_codex_cli_tokens reads exactly one file; assert that read
-        # carried an explicit UTF-8 encoding. (The bound-method spy captures
-        # kwargs but not the bound `self`, so we check the single read directly.)
-        assert spy.call_count >= 1, "expected a read of the codex auth.json"
-        for call in spy.call_args_list:
-            assert "encoding" in call.kwargs, "codex read_text() must pass encoding"
-            assert "utf-8" in str(call.kwargs["encoding"]).lower()
-
-
 # --- sibling readers of the same ~/.hermes/auth.json in other modules -------
 #
 # _load_auth_store lives in hermes_cli/auth.py, but several other modules read
@@ -353,4 +329,3 @@ class TestAuthJsonSiblingReaders:
         assert nous.get("agent_key") == "k"
         # The non-ASCII label round-trips intact.
         assert nous.get("label") == "工作账号"
-

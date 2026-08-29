@@ -3835,7 +3835,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
         raise AuthError(
-            "No Codex credentials stored. Run `hermes auth` to authenticate.",
+            "No Codex credentials stored. Run `hermes auth add openai-codex` to authenticate.",
             provider="openai-codex",
             code="codex_auth_missing",
             relogin_required=True,
@@ -3843,7 +3843,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
         raise AuthError(
-            "Codex auth state is missing tokens. Run `hermes auth` to re-authenticate.",
+            "Codex auth state is missing tokens. Run `hermes auth add openai-codex` to re-authenticate.",
             provider="openai-codex",
             code="codex_auth_invalid_shape",
             relogin_required=True,
@@ -3852,14 +3852,14 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     refresh_token = tokens.get("refresh_token")
     if not isinstance(access_token, str) or not access_token.strip():
         raise AuthError(
-            "Codex auth is missing access_token. Run `hermes auth` to re-authenticate.",
+            "Codex auth is missing access_token. Run `hermes auth add openai-codex` to re-authenticate.",
             provider="openai-codex",
             code="codex_auth_missing_access_token",
             relogin_required=True,
         )
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise AuthError(
-            "Codex auth is missing refresh_token. Run `hermes auth` to re-authenticate.",
+            "Codex auth is missing refresh_token. Run `hermes auth add openai-codex` to re-authenticate.",
             provider="openai-codex",
             code="codex_auth_missing_refresh_token",
             relogin_required=True,
@@ -3999,22 +3999,6 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         _save_auth_store(auth_store)
 
 
-def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
-    """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
-    imported = _import_codex_cli_tokens()
-    # Require BOTH tokens before adopting: persisting a payload without a
-    # usable refresh_token would only break the next refresh cycle.
-    if not (
-        imported
-        and str(imported.get("access_token", "") or "").strip()
-        and str(imported.get("refresh_token", "") or "").strip()
-    ):
-        return None
-    logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
-    _save_codex_tokens(imported)
-    return dict(imported)
-
-
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -4025,7 +4009,7 @@ def refresh_codex_oauth_pure(
     del access_token  # Access token is only used by callers to decide whether to refresh.
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise AuthError(
-            "Codex auth is missing refresh_token. Run `hermes auth` to re-authenticate.",
+            "Codex auth is missing refresh_token. Run `hermes auth add openai-codex` to re-authenticate.",
             provider="openai-codex",
             code="codex_auth_missing_refresh_token",
             relogin_required=True,
@@ -4101,10 +4085,9 @@ def refresh_codex_oauth_pure(
             relogin_required = True
         if code == "refresh_token_reused":
             message = (
-                "Codex refresh token was already consumed by another client "
-                "(e.g. Codex CLI or VS Code extension). "
-                "Run `codex` in your terminal to generate fresh tokens, "
-                "then run `hermes auth` to re-authenticate."
+                "Hermes' Codex refresh token is no longer valid. "
+                "Run `hermes auth add openai-codex` to create a fresh, "
+                "Hermes-owned login."
             )
             relogin_required = True
         # A 401/403 from the token endpoint always means the refresh token
@@ -4157,33 +4140,11 @@ def _refresh_codex_auth_tokens(
     
     Saves the new tokens to Hermes auth store automatically.
     """
-    try:
-        refreshed = refresh_codex_oauth_pure(
-            str(tokens.get("access_token", "") or ""),
-            str(tokens.get("refresh_token", "") or ""),
-            timeout_seconds=timeout_seconds,
-        )
-    except AuthError as exc:
-        # Self-heal cross-store refresh_token rotation. Hermes keeps its OWN
-        # Codex OAuth token (per profile + top-level), separate from the Codex
-        # CLI's ~/.codex/auth.json. OAuth refresh_tokens are single-use, so when
-        # the Codex CLI (or another Hermes process) rotates the shared token,
-        # this frozen copy's refresh_token goes stale and the refresh fails with
-        # a relogin-required error (invalid_grant / refresh_token_reused / 401).
-        # Before surfacing that as a hard 401 to the turn, adopt the canonical
-        # fresh token from ~/.codex/auth.json (the Codex CLI keeps it current) so
-        # idle profiles / desktop sessions recover automatically instead of
-        # 401'ing until a manual re-auth. Transient failures (e.g. 429 quota)
-        # keep relogin_required=False — the stored token is still valid there, so
-        # we never self-heal those and re-raise unchanged.
-        if not getattr(exc, "relogin_required", False):
-            raise
-        imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
-        )
-        if not imported:
-            raise
-        return imported
+    refreshed = refresh_codex_oauth_pure(
+        str(tokens.get("access_token", "") or ""),
+        str(tokens.get("refresh_token", "") or ""),
+        timeout_seconds=timeout_seconds,
+    )
 
     updated_tokens = dict(tokens)
     updated_tokens["access_token"] = refreshed["access_token"]
@@ -4191,40 +4152,6 @@ def _refresh_codex_auth_tokens(
 
     _save_codex_tokens(updated_tokens)
     return updated_tokens
-
-
-def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
-    """Try to read tokens from ~/.codex/auth.json (Codex CLI shared file).
-    
-    Returns tokens dict if valid and not expired, None otherwise.
-    Does NOT write to the shared file.
-    """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
-    if not codex_home:
-        codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
-    if not auth_path.is_file():
-        return None
-    try:
-        payload = json.loads(auth_path.read_text(encoding="utf-8-sig"))
-        tokens = payload.get("tokens")
-        if not isinstance(tokens, dict):
-            return None
-        access_token = tokens.get("access_token")
-        refresh_token = tokens.get("refresh_token")
-        if not access_token or not refresh_token:
-            return None
-        # Reject expired tokens — importing stale tokens from ~/.codex/
-        # that can't be refreshed leaves the user stuck with "Login successful!"
-        # but no working credentials.
-        if _codex_access_token_is_expiring(access_token, 0):
-            logger.debug(
-                "Codex CLI tokens at %s are expired — skipping import.", auth_path,
-            )
-            return None
-        return dict(tokens)
-    except Exception:
-        return None
 
 
 def resolve_codex_runtime_credentials(
@@ -4249,18 +4176,7 @@ def resolve_codex_runtime_credentials(
         data = _read_codex_tokens()
     except AuthError as exc:
         read_error = exc
-        if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
-            "codex_auth_missing_access_token",
-            "codex_auth_missing_refresh_token",
-            "codex_auth_invalid_shape",
-        }:
-            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
-            if imported:
-                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
-            else:
-                data = None
-        else:
-            data = None
+        data = None
 
     if data is None:
         pool_token = _pool_codex_access_token()
@@ -8081,26 +7997,6 @@ def _login_openai_codex(
                 print("Existing Codex credentials are expired. Starting fresh login...")
         except AuthError:
             pass
-
-    # Check for existing Codex CLI tokens we can import
-    if not force_new_login:
-        cli_tokens = _import_codex_cli_tokens()
-        if cli_tokens:
-            print("Found existing Codex CLI credentials at ~/.codex/auth.json")
-            print("Hermes will create its own session to avoid conflicts with Codex CLI / VS Code.")
-            try:
-                do_import = input("Import these credentials? (a separate login is recommended) [y/N]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                do_import = "n"
-            if do_import in {"y", "yes"}:
-                _save_codex_tokens(cli_tokens)
-                base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
-                config_path = _update_config_for_provider("openai-codex", base_url)
-                print()
-                print("Credentials imported. Note: if Codex CLI refreshes its token,")
-                print("Hermes will keep working independently with its own session.")
-                print(f"  Config updated: {config_path} (model.provider=openai-codex)")
-                return
 
     # Run a fresh device code flow — Hermes gets its own OAuth session
     print()

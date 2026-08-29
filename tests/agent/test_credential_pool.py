@@ -24,6 +24,145 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
+def test_codex_manual_account_refresh_keeps_its_own_token_pair(tmp_path, monkeypatch):
+    """Refreshing account B must not adopt account A's singleton tokens."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "account-a-access",
+                        "refresh_token": "account-a-refresh",
+                    }
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "account-a",
+                        "label": "account-a",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "account-a-access",
+                        "refresh_token": "account-a-refresh",
+                    },
+                    {
+                        "id": "account-b",
+                        "label": "account-b",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "account-b-access",
+                        "refresh_token": "account-b-refresh",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    seen = {}
+
+    def _refresh(access_token, refresh_token):
+        seen["tokens"] = (access_token, refresh_token)
+        return {
+            "access_token": "account-b-access-new",
+            "refresh_token": "account-b-refresh-new",
+            "last_refresh": "2026-08-29T08:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _refresh)
+    pool = load_pool("openai-codex")
+    account_b = next(entry for entry in pool.entries() if entry.id == "account-b")
+
+    refreshed = pool._refresh_entry(account_b, force=True)
+
+    assert refreshed is not None
+    assert seen["tokens"] == ("account-b-access", "account-b-refresh")
+    assert refreshed.access_token == "account-b-access-new"
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    singleton = payload["providers"]["openai-codex"]["tokens"]
+    assert singleton == {
+        "access_token": "account-a-access",
+        "refresh_token": "account-a-refresh",
+    }
+
+
+def test_codex_manual_account_terminal_refresh_does_not_remove_singleton(
+    tmp_path, monkeypatch
+):
+    """A dead account B refresh token must quarantine B, not account A."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "account-a-access",
+                        "refresh_token": "account-a-refresh",
+                    }
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "account-a",
+                        "label": "account-a",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "account-a-access",
+                        "refresh_token": "account-a-refresh",
+                    },
+                    {
+                        "id": "account-b",
+                        "label": "account-b",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "account-b-access",
+                        "refresh_token": "account-b-refresh",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import STATUS_DEAD, load_pool
+    from hermes_cli.auth import AuthError
+
+    def _fail_refresh(_access_token, _refresh_token):
+        raise AuthError(
+            "refresh token rejected",
+            provider="openai-codex",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _fail_refresh)
+    pool = load_pool("openai-codex")
+    account_b = next(entry for entry in pool.entries() if entry.id == "account-b")
+
+    assert pool._refresh_entry(account_b, force=True) is None
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    assert next(entry for entry in entries if entry["id"] == "account-a")
+    failed = next(entry for entry in entries if entry["id"] == "account-b")
+    assert failed["last_status"] == STATUS_DEAD
+    assert payload["providers"]["openai-codex"]["tokens"] == {
+        "access_token": "account-a-access",
+        "refresh_token": "account-a-refresh",
+    }
+
+
 
 
 
@@ -41,11 +180,6 @@ def _jwt_with_claims(claims: dict) -> str:
 
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    # Prevent auto-seeding from Codex CLI tokens on the host
-    monkeypatch.setattr(
-        "hermes_cli.auth._import_codex_cli_tokens",
-        lambda: None,
-    )
     _write_auth_store(
         tmp_path,
         {

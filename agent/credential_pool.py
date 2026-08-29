@@ -1047,7 +1047,7 @@ class CredentialPool:
         return entry
 
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Codex device_code pool entry from auth.json if tokens differ.
+        """Sync a singleton-seeded Codex pool entry from auth.json if tokens differ.
 
         When a Codex OAuth access token expires (or the ChatGPT account hits
         its 5h/weekly quota), the pool entry gets marked ``STATUS_EXHAUSTED``
@@ -1059,11 +1059,12 @@ class CredentialPool:
         though fresh credentials are sitting on disk — and every request
         fails with "no available entries (all exhausted or empty)".
 
-        Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device_code-sourced entries; env/API-key-sourced entries have no
-        auth.json shadow to sync from.
+        Mirrors the Nous/Anthropic resync paths above.  Only singleton-seeded
+        ``device_code`` entries have an auth.json provider-state shadow.
+        ``manual:device_code`` entries are independent accounts added with
+        ``hermes auth add openai-codex`` and must refresh their own token pair.
         """
-        if self.provider != "openai-codex" or entry.source not in ("device_code", "manual:device_code"):
+        if self.provider != "openai-codex" or entry.source != "device_code":
             return entry
         try:
             with _auth_store_lock():
@@ -1928,12 +1929,32 @@ class CredentialPool:
                     self._replace_entry(synced, updated)
                     self._persist()
                     return updated
-                # Terminal error: auth.json has no newer tokens — the stored
-                # refresh_token is dead.  Clear it from auth.json so the next
-                # session does not re-seed the same revoked credentials, and
-                # remove all singleton-seeded (device_code) entries from the
-                # in-memory pool.  Mirrors the xAI and Nous quarantine paths.
+                # Terminal error for an independent pooled account: quarantine
+                # only that entry.  It has no singleton auth.json shadow, and
+                # touching the singleton here would corrupt a different Codex
+                # account in a multi-account pool.
                 if auth_mod._is_terminal_codex_oauth_refresh_error(exc):
+                    if entry.source != "device_code":
+                        raw_reason = str(getattr(exc, "code", "") or "").strip()
+                        terminal_reason = (
+                            raw_reason
+                            if raw_reason in _TERMINAL_AUTH_REASONS
+                            else "invalid_token"
+                        )
+                        self._mark_exhausted(
+                            entry,
+                            401,
+                            {
+                                "reason": terminal_reason,
+                                "message": str(exc),
+                            },
+                        )
+                        return None
+
+                    # Singleton terminal error: auth.json has no newer tokens.
+                    # Clear it so the next session does not re-seed the same
+                    # revoked credentials, and remove the singleton-seeded
+                    # entry from the in-memory pool.
                     logger.debug(
                         "Codex OAuth refresh token is terminally invalid; clearing local token state"
                     )
