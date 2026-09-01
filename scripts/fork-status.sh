@@ -31,6 +31,23 @@ echo "== Delta vs upstream (files) =="
 git diff upstream/main...HEAD --stat | tail -n 15
 
 echo
+echo "== Collision forecast (upstream churn inside fork-modified files) =="
+# Files BOTH sides changed since the fork's merge-base: each one is a
+# potential rebase stop on the next `hermes update`. rerere replays
+# resolutions it has already recorded; a NEW name here means the next
+# rebase may pause for a one-time manual resolve.
+merge_base=$(git merge-base HEAD upstream/main)
+overlap=$(comm -12 \
+  <(git diff --name-only "$merge_base"..upstream/main | sort -u) \
+  <(git diff --name-only "$merge_base"..HEAD | sort -u))
+if [ -z "$overlap" ]; then
+  echo "  (clear — upstream churn does not touch fork-modified files)"
+else
+  echo "$overlap" | sed 's/^/  • /'
+  echo "  → the next rebase may pause on these; resolve once, rerere remembers."
+fi
+
+echo
 echo "== Adoption hints (fork-added symbols that now exist upstream) =="
 # Scan only lines this fork ADDS to files that also exist upstream (features
 # living in fork-only files can't collide by name until upstream adopts the
