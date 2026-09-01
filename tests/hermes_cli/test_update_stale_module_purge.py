@@ -16,8 +16,10 @@ module graph from the updated checkout.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -80,6 +82,60 @@ def test_purge_protects_executing_modules():
     assert sys.modules.get("hermes_cli.update_cmd") is update_cmd
     assert sys.modules.get("hermes_cli.main") is cli_main
     assert "hermes_cli" in sys.modules
+
+
+def test_purge_preserves_in_flight_update_receipt(tmp_path):
+    """A begun receipt must survive the purge and still be written.
+
+    Field failure (2026-09-01): every SUCCESSFUL update lost its receipt.
+    ``begin_update_receipt()`` runs at the top of the update; the purge
+    after the pull evicted ``hermes_cli.update_receipt`` from sys.modules,
+    so the updater's late ``from hermes_cli.update_receipt import
+    finalize_update_receipt`` executed a FRESH module whose ``_current``
+    singleton is None — the begun receipt was orphaned and never
+    persisted. Failed updates exited before the purge, which is why only
+    failures had receipts. The receipt module holds the update's in-flight
+    state, so it belongs with the protected executing modules.
+
+    Runs in a subprocess: the real purge evicts real modules, and an
+    in-process run would leave the parent pytest process with a half-
+    restored module graph (parent-package attributes diverge from
+    sys.modules), leaking into unrelated tests.
+    """
+    import json
+    import subprocess
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    code = (
+        "import sys\n"
+        "import hermes_cli.update_receipt as ur\n"
+        "from hermes_cli import main as cli_main\n"
+        "ur.begin_update_receipt()\n"
+        "ur.record_step('pre_update_backup', False, 'disabled or failed')\n"
+        "cli_main._purge_stale_hermes_modules()\n"
+        "assert sys.modules.get('hermes_cli.update_receipt') is ur, (\n"
+        "    'receipt module was evicted by the purge')\n"
+        "assert ur._current is not None, 'receipt singleton orphaned by purge'\n"
+        "from hermes_cli.update_receipt import finalize_update_receipt\n"
+        "path = ur.finalize_update_receipt('success')\n"
+        "assert path is not None and path.is_file(), (\n"
+        "    'begun receipt was orphaned by the purge — finalize became a no-op')\n"
+        "print(path)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "HERMES_HOME": str(home)},
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = Path(result.stdout.strip().splitlines()[-1])
+    assert receipt.is_file()
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    assert payload["outcome"] == "success"
+    assert payload["steps"][0]["name"] == "pre_update_backup"
 
 
 def test_purge_leaves_prefix_lookalikes_alone():
