@@ -83,6 +83,12 @@ _STALE_PURGE_PROTECTED = frozenset(
         "hermes_cli.main",
         "hermes_cli.update_cmd",
         "hermes_cli.hermes_logging",
+        # Holds the update's in-flight receipt singleton (_current). Evicting
+        # it made every late `from hermes_cli.update_receipt import ...`
+        # execute a FRESH module with _current=None, orphaning the begun
+        # receipt — successful updates never wrote one (failed updates exit
+        # before the purge, which is why only failures had receipts).
+        "hermes_cli.update_receipt",
     }
 )
 
